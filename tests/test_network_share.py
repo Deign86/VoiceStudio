@@ -17,9 +17,37 @@ def test_lan_ipv4_filters_loopback_and_linklocal():
         "en0": [_addr("192.168.1.42")],
         "en1": [_addr("169.254.5.5"), _addr("10.0.0.9")],
     }
-    with patch("services.network_share.psutil.net_if_addrs", return_value=fake):
+    with patch("services.network_share.psutil.net_if_addrs", return_value=fake), \
+         patch("services.network_share.psutil.net_if_stats", return_value={}), \
+         patch("services.network_share._primary_ipv4", return_value=None):
         out = ns.lan_ipv4_addresses()
     assert out == ["192.168.1.42", "10.0.0.9"]
+
+
+def test_lan_ipv4_puts_default_route_first_and_hides_virtual_adapters():
+    # Mirrors a Windows host with Hyper-V, WSL and Tailscale alongside Wi-Fi.
+    fake = {
+        "vEthernet (Default Switch)": [_addr("172.19.80.1")],
+        "vEthernet (WSL (Hyper-V firewall))": [_addr("172.25.96.1")],
+        "Tailscale": [_addr("100.120.64.9")],
+        "Ethernet 2": [_addr("10.5.0.2")],
+        "Wi-Fi": [_addr("192.168.254.163")],
+    }
+    stats = {"Ethernet 2": SimpleNamespace(isup=False)}
+    with patch("services.network_share.psutil.net_if_addrs", return_value=fake), \
+         patch("services.network_share.psutil.net_if_stats", return_value=stats), \
+         patch("services.network_share._primary_ipv4", return_value="192.168.254.163"):
+        out = ns.lan_ipv4_addresses()
+    assert out == ["192.168.254.163"]
+
+
+def test_lan_ipv4_falls_back_to_all_addresses_when_only_virtual_exist():
+    fake = {"vEthernet (WSL)": [_addr("172.25.96.1")]}
+    with patch("services.network_share.psutil.net_if_addrs", return_value=fake), \
+         patch("services.network_share.psutil.net_if_stats", return_value={}), \
+         patch("services.network_share._primary_ipv4", return_value=None):
+        out = ns.lan_ipv4_addresses()
+    assert out == ["172.25.96.1"]
 
 
 def test_gen_pin_is_six_digits():

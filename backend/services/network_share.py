@@ -167,17 +167,55 @@ def _set_mcp_lan_hosts(app, addresses: list[str], *, enabled: bool) -> None:
     _runtime.mcp_allowed_origins = []
 
 
+# Adapters other LAN machines can't reach: hypervisor/WSL switches, VPN
+# overlays, containers. Matched case-insensitively against the interface name.
+_VIRTUAL_IFACE_MARKERS = (
+    "vethernet", "hyper-v", "wsl", "virtualbox", "vbox", "vmware", "vmnet",
+    "docker", "veth", "br-", "tailscale", "zerotier", "hamachi", "radmin",
+    "wireguard", "openvpn", "tap-", "tun", "utun", "npcap", "loopback",
+)
+
+
+def _primary_ipv4() -> str | None:
+    """The IPv4 the OS routes outbound traffic from — the physical LAN NIC.
+
+    A UDP connect() only selects a route; no packet is sent, so this works
+    offline as long as a default gateway exists.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1, never routed anywhere
+            return s.getsockname()[0]
+        except OSError:
+            return None
+
+
 def lan_ipv4_addresses() -> list:
-    out, seen = [], set()
-    for _name, addrs in psutil.net_if_addrs().items():
+    """LAN IPv4s other machines can reach, most reliable first.
+
+    The default-route address leads; virtual/VPN/down adapters are dropped so
+    the share panel lists only addresses a LAN client can actually use. Falls
+    back to every non-loopback address if filtering would leave nothing.
+    """
+    stats = psutil.net_if_stats()
+    primary = _primary_ipv4()
+    reachable, everything = [], []
+    for name, addrs in psutil.net_if_addrs().items():
+        virtual = any(m in name.lower() for m in _VIRTUAL_IFACE_MARKERS)
+        down = name in stats and not stats[name].isup
         for a in addrs:
-            if a.family == socket.AF_INET:
-                ip = a.address
-                if ip.startswith("127.") or ip.startswith("169.254."):
-                    continue
-                if ip not in seen:
-                    seen.add(ip)
-                    out.append(ip)
+            if a.family != socket.AF_INET:
+                continue
+            ip = a.address
+            if ip.startswith("127.") or ip.startswith("169.254.") or ip in everything:
+                continue
+            everything.append(ip)
+            if not (virtual or down):
+                reachable.append(ip)
+    out = reachable or everything
+    if primary in out:
+        out.remove(primary)
+        out.insert(0, primary)
     return out
 
 
